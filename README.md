@@ -1,3 +1,16 @@
+Status
+Grok did the Thunderf00t pass. The maze lost. See below Line 130 ## Status.
+
+The first revisions in this repo were a conceptual optical architecture (mirrored slab, camera readout, chromatic “gates”). That design does not hold up.
+
+A critique (physics, timing, I/O, what time-multiplexed photonics actually is) was done in conversation with Grok. The version that could be built is a hybrid photonic MAC / delay-line helper, not a general computer, and it does not replace CPUs, RAM, or fiber. See TMPP-Technical-Proposal.md if that file is in the tree.
+
+This is an open sketch, not a product.
+
+
+
+
+
 From: 
 To:
 ________________________________________
