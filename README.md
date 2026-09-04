@@ -113,3 +113,19 @@ B. Coherent Photon-Phonon Alignment (Laser Rail Guidance)
 C. Active Noise Cloaking & Anti-Phase Attenuation
 •	The Mechanic: The continuous GHz oscillation establishes a rigid, homogeneous baseline frequency that effectively "drowns out" and masks unpredictable, low-frequency environmental rumbling (such as facility cooling hardware, adjacent vehicular traffic, or structural building shifts).
 •	The Verification Loop: The primary underside safety controllers continuously monitor the phase status of the readouts. If an anomalous external kinetic shock penetrates the housing shield, the transducers instantly shift their acoustic output into an exact anti-phase attenuation wave, neutralizing the mechanical distortion at the speed of sound before it can corrupt the multi-state color logic states.
+
+## Status
+
+Grok did the Thunderf00t pass. The maze lost.
+
+The first revisions in this repo were a conceptual optical architecture
+(mirrored slab, camera readout, chromatic “gates”). That design does not
+hold up.
+
+A critique (physics, timing, I/O, what time-multiplexed photonics
+actually is) was done in conversation with Grok. The version that could
+be built is a hybrid photonic MAC / delay-line helper, not a general
+computer, and it does not replace CPUs, RAM, or fiber. See
+`TMPP-Technical-Proposal.md` if that file is in the tree.
+
+This is an open sketch, not a product.
