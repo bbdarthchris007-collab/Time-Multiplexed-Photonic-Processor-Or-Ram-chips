@@ -116,7 +116,7 @@ C. Active Noise Cloaking & Anti-Phase Attenuation
 
 ## Status
 
-Grok did the Thunderf00t pass. The maze lost.
+Grok did the Thunderf00t pass. The maze lost. See below.
 
 The first revisions in this repo were a conceptual optical architecture
 (mirrored slab, camera readout, chromatic “gates”). That design does not
@@ -129,3 +129,337 @@ computer, and it does not replace CPUs, RAM, or fiber. See
 `TMPP-Technical-Proposal.md` if that file is in the tree.
 
 This is an open sketch, not a product.
+
+# Time-Multiplexed Photonic Processor (TMPP)
+
+**Open technical specification — revision 2**  
+Status: research architecture + staged prototype plan  
+Not a product datasheet. No THz-camera billiard-ball chip.
+
+This rewrite keeps the original goals — time multiplexing, optical parallelism, a simple open design, and interest in harsh-environment hardware — and replaces mechanisms that cannot work with mechanisms that already exist in labs.
+
+---
+
+## 0. What changed and why
+
+| Original claim | Problem | Replacement |
+|---|---|---|
+| Glass wafer with edge mirrors, light bouncing in free-ish bulk | Uncontrolled paths, scatter, no confined mode, no addressable nodes | Foundry waveguides (SiN or SOI) that *define* the path |
+| Pulse crossings *are* the logic | Linear optics does not compute at a crossing | Explicit operations: delay, split, weight, interfere, detect |
+| Overhead gated cameras / streak cameras as the bus | Imaging cannot be the THz I/O fabric | On-chip photodiodes + electronic ADCs |
+| Red+blue = purple = two-bit gate | Color mix is not a gate | WDM: independent wavelengths, kept separate |
+| 50/50 split to a wafer-scale PIN sheet for ECC | Halves photons; PIC arrays do not run at “THz frames” | Differential detectors + a calibration replica waveguide |
+| GHz SAW “photon rails” that cancel shocks at the speed of sound | Sound is too slow to protect picosecond pulses | Ordinary packaging isolation; slow thermal/EO/PCM phase control |
+| Net-zero heat, multi-THz execution, EMP-proof core | Confuses optical frequency with compute; ignores lasers and electronics | Honest power and rate: GHz-class optoelectronics, optics for the inner loop only |
+| 3–5 year planned clouding | Wrong reliability model | Coatings and power so the PIC outlives the package electronics |
+
+The processor is **hybrid**. Light does delay, broadcast, weighting, and analog multiply-accumulate. Electronics does modulation, sampling, control, and memory that must persist.
+
+---
+
+## 1. Objective
+
+Build a **time-multiplexed photonic inner loop** that:
+
+1. Encodes a vector as a pulse train (time slots = vector elements).
+2. Applies analog weights in optics (microrings or MZIs).
+3. Accumulates a dot product on a photodetector (current integrate).
+4. Reuses one small optical core across a large vector by staggering slots in time.
+5. Optionally runs several independent streams on several wavelengths.
+
+That is the same idea family as delay-line photonic reservoir computers and time-multiplexed photonic tensor cores. It is not a general CPU and it is not optical DRAM.
+
+**In-scope first product of the research:**  
+a bench system that computes batched analog dot products / small convolutions at a few Gbaud, with measured energy per MAC and measured accuracy on a toy network (MNIST-scale).
+
+**Out of scope:** replacing HBM, running an LLM, THz wall-clock clocks, camera readout, single-photon quantum interfaces.
+
+---
+
+## 2. System block diagram
+
+```
+  Host / FPGA
+       |  digital vectors, weights, timing
+       v
+  Driver ASICs / FPGA SERDES
+       |  analog / NRZ / PAM drive
+       v
+  Laser source(s)  --->  electro-optic modulator(s)  --->  photonic core
+                                                         |  delay line(s)
+                                                         |  splitter tree
+                                                         |  weight bank (MRR or MZI)
+                                                         |  combiner
+                                                         v
+                                                    balanced PD
+                                                         |
+                                                         v
+                                              TIA + integrate / ADC
+                                                         |
+                                                         v
+                                              FPGA accumulate / activation
+```
+
+Clocking: one electrical master clock. A *tapped optical copy* of the modulated pulse train can trigger the integrate-and-dump window (this is the only surviving piece of the original “optical strobe,” and it is ordinary clock-forwarding).
+
+---
+
+## 3. Photonic core (the part that can be fabricated)
+
+### 3.1 Platform
+
+Pick one, in this order of practicality:
+
+1. **Silicon nitride (SiN) PIC** — lower loss, good for delay lines of several ns.  
+2. **Silicon-on-insulator (SOI)** — more modulator/PD options, higher loss, shorter delays.  
+3. **Fiber delay + discrete modulators** — year-0 prototype, no foundry wait.
+
+Do **not** start with a custom mirrored glass slab.
+
+### 3.2 Time-multiplexed vector
+
+Let the vector be \(x = (x_0,\ldots,x_{N-1})\).
+
+- Slot period \(T_s\) (example: \(200\,\mathrm{ps}\) at 5 Gbaud).
+- Pulse (or PAM level) in slot \(k\) carries \(x_k\).
+- A waveguide delay of \(T_s\) is one element of “optical memory.”
+
+A spiral or racetrack delay of length \(L\) stores
+
+\[
+\tau = n_g L / c
+\]
+
+Example: SiN group index \(n_g \approx 2\). A \(15\,\mathrm{cm}\) spiral is \(\tau \approx 1\,\mathrm{ns}\) \(\approx 5\) slots at 5 GHz. That is modest memory, which is fine. Time multiplexing exists *because* on-chip delay is expensive.
+
+### 3.3 The operation that is actually computed
+
+One useful primitive is a **photonic MAC**:
+
+\[
+y = \sum_{k=0}^{N-1} w_k x_k
+\]
+
+Optics implementation:
+
+- \(x_k\) modulates optical amplitude (or intensity) in time.
+- \(w_k\) is a slowly programmed transmission on a microring or MZI (update rate kHz–MHz, not GHz, unless you pay for fast modulators on the weight path too).
+- For a **static weight vector**, one weight bank can be time-shared: the same physical \(w\) multiplies successive \(x_k\) only if \(w\) is the same. That is *not* a general dense matvec.
+
+For a general matvec \(y_i = \sum_k W_{ik} x_k\) you need one of:
+
+- **Space:** \(M\) parallel weight channels (one per output).  
+- **Time:** reprogram weights between outputs (slow unless weights are also time-multiplexed with a fast modulator).  
+- **Wavelength:** \(W_{ik}\) on wavelength \(\lambda_i\).
+
+The design that has a chance in a first chip:
+
+- Small **weight bank** of \(M\) microrings (e.g. \(M = 8\) or \(16\)).
+- Input \(x(t)\) broadcast to all rings.
+- Each ring drops a weighted copy to a PD.
+- Electronic integration over \(N\) slots produces \(M\) partial outputs per pass.
+- Tile this in time for larger \(N\).
+
+That is a real accelerator inner loop, not a maze.
+
+### 3.4 Interference vs intensity
+
+Two workable encodings:
+
+1. **Incoherent intensity weights** — simplest. Weights are attenuations \(0\ldots 1\). Sign via differential pair (two PDs).  
+2. **Coherent MZI mesh** — more general linear optics, much harder to calibrate.
+
+Revision 2 standardizes on **incoherent MRR weight banks + balanced PDs**. Meshes are a later chip.
+
+### 3.5 Wavelength channels (correct use of WDM)
+
+Use \(C\) lasers or a comb, e.g. \(C = 4\) or \(8\) DWDM lanes.
+
+- Each wavelength is an **independent** time-multiplexed stream.  
+- Demux with MRRs or AWGs onto separate PDs.  
+- Do **not** decode “purple.” If two colors hit one PD you have crosstalk, not a new logic state.
+
+Capacity scales as \(C \times M\) analog MACs per slot, limited by laser, mux crosstalk, and PD bandwidth — not by “number of rainbows.”
+
+---
+
+## 4. Readout (no cameras)
+
+Each output channel:
+
+1. Photodiode (or balanced pair).  
+2. TIA.  
+3. Optional analog integrate-and-dump over \(N\) slots (this is the good idea in time-multiplexed photonic tensor work: the ADC runs at the *vector* rate, not the *slot* rate).  
+4. ADC into the FPGA.
+
+Example target, not a promise:
+
+- Slot rate \(5\,\mathrm{GHz}\)
+- Integrate over \(N = 64\) slots \(\rightarrow\) ADC at \(\sim 78\,\mathrm{MHz}\) per channel
+- \(M = 8\) channels, \(C = 4\) wavelengths \(\rightarrow\) 32 analog outputs
+
+That is buildable with ordinary high-speed analog electronics. A streak camera is not.
+
+**Integrity check (replacement for the underside PIN sheet):**
+
+- A 1% tap on the input waveguide to a monitor PD (power / pulse presence).  
+- A dark PD for offset.  
+- Periodic known pilot slots (`1010…`) to measure gain drift.  
+- Optional second PD on a replica unused drop port.
+
+If monitors disagree beyond a threshold, drop the frame and recapture. That is calibration, not “absolute EMP-proof ECC.”
+
+---
+
+## 5. Timing
+
+Keep one electrical clock.
+
+- FPGA synthesizes the slot clock.  
+- Modulator is driven from that clock.  
+- Integrate-and-dump window is a digital delay from the same clock, plus a one-time measured waveguide latency.  
+- Optional: photodiode on a pick-off of the optical pulse train to phase-lock the dump edge (optical clock recovery). Useful; not magic.
+
+Picosecond “zero drift forever” is the wrong requirement. You need slot-period stability much better than \(T_s\), which at 5 GHz is a routine SERDES problem, not a new physics problem.
+
+---
+
+## 6. What the original “RAM” actually is
+
+Call it what it is: **optical delay memory**, capacity tiny.
+
+\[
+\text{bits stored} \approx C \times (\tau / T_s) \times b
+\]
+
+With \(C=4\), \(\tau=2\,\mathrm{ns}\), \(T_s=200\,\mathrm{ps}\), \(b \approx 4\) analog levels (roughly 2 bits):  
+about **80 analog samples**, not megabytes.
+
+Uses that make sense:
+
+- Pipeline a vector while weights sit in the rings.  
+- Time-multiplexed reservoir / FIR taps.  
+- Optical deskew.
+
+Uses that do not: main memory, KV cache, “hot-swap the glass every 5 years as RAM.”
+
+Persistent state lives in electronics (SRAM) or, later, **nonvolatile photonic weights** (phase-change on waveguides). PCM weight banks are a documented research path. Put that in revision 3, not revision 2.
+
+---
+
+## 7. Thermal, radiation, packaging — without slogans
+
+- **Heat:** lasers, drivers, TIAs, and ADCs dominate. The waveguide mesh is not the thermal story. Budget watts for the module, not “net-zero substrate.”  
+- **Cooling:** standard PIC module; TEC if lasers/rings need it. Rings drift with temperature; you *will* need lock loops or athermal design.  
+- **Radiation:** waveguides don’t latch up. Lasers, modulators, and CMOS readout do. For aerospace, treat this as a **photonic analog datapath behind rad-tolerant electronics**, not an EMP-proof computer.  
+- **Vibration:** fiber attach and package resonances are real. Fix with mechanical design and closed-loop ring locking. Do not drive the whole wafer at 1 GHz hoping phonons steer the beam.
+
+Phase shifters on the chip should be one of:
+
+- Thermo-optic (slow, easy),  
+- Electro-optic (faster, platform-dependent),  
+- MEMS or PCM (specialty).
+
+SAW/LiNbO3 belongs only if you later add a discrete acousto-optic modulator off-chip. It is not a wafer-scale seismic cloak.
+
+---
+
+## 8. Performance envelope (order-of-magnitude, for honesty)
+
+Assume one chiplet:
+
+- \(C = 4\) wavelengths  
+- \(M = 16\) weight channels  
+- \(5\,\mathrm{GHz}\) slot rate  
+- 1 multiply + 1 add per channel per slot  
+
+Peak analog MAC rate:
+
+\[
+4 \times 16 \times 5\times10^9 \approx 0.32\,\mathrm{TMAC/s}
+\]
+
+That is interesting for a research module. It is not 368 TOPS and it will not stay analog-clean at that peak. Quote **measured** effective TOPS after quantization and SNR, on a workload.
+
+Energy: set a goal of **sub-pJ/MAC in the optical inner loop**, then add laser wall-plug, DAC, ADC. The wall-plug number is what matters. Most papers that look magical forget the converter.
+
+Accuracy target for v1: MNIST or Fashion-MNIST within a few points of a 4–6 bit digital baseline, with measured weight drift over hours.
+
+---
+
+## 9. Staged build (this is how it “has a chance”)
+
+### Stage 0 — table (3 months)
+
+- C-band laser + LiNbO3 or silicon modulator  
+- Fiber spool as delay  
+- One variable optical attenuator as a “weight”  
+- One PD + scope / ADC  
+- Demonstrate time-multiplexed dot product of length 32 against a numpy reference  
+
+Exit criterion: error explained by measured SNR, not by a new theory.
+
+### Stage 1 — multi-weight discrete (6–9 months)
+
+- 4–8 parallel attenuators or a commercial MRR bank if available  
+- WDM with 2 wavelengths  
+- FPGA integrate-and-dump  
+
+Exit criterion: 2×8 analog matvec, coded activation, classify a toy dataset.
+
+### Stage 2 — custom SiN/SOI PIC (foundry cycle)
+
+- On-chip spirals, 8–16 MRR weights, taps, monitor PDs  
+- Fiber attach, TEC, ring lock  
+- Same FPGA brain  
+
+Exit criterion: same algorithm as Stage 1, smaller box, power and drift report.
+
+### Stage 3 — only if Stage 2 works
+
+- PCM or foundry-compatible nonvolatile weights  
+- More wavelengths  
+- Multi-chiplet tile with optical I/O between chiplets  
+- Radiation test of the *module*, not of “glass logic”
+
+Do not skip to Stage 3 in a README.
+
+---
+
+## 10. Workload fit
+
+Good fit:
+
+- Small dense layers and convolutions where weights are stationary for many vectors  
+- Analog correlation / matched filter  
+- Reservoir / delay-based temporal features  
+- Optical front-end for edge sensors already in the analog domain
+
+Bad fit:
+
+- General-purpose ISA  
+- Rapidly changing giant weight matrices with no local reuse  
+- Anything whose bottleneck is already HBM bytes, not MACs
+
+---
+
+## 11. Open items that must be measured, not asserted
+
+1. Insertion loss from laser to PD vs. required photons/bit.  
+2. Ring FSR, Q, thermal drift, lock bandwidth.  
+3. WDM crosstalk vs. bit error / analog MSE.  
+4. PD + TIA noise vs. integration length \(N\).  
+5. Weight resolution in bits that actually show up in network accuracy.  
+6. Wall-plug energy, including laser and converters.  
+7. How you load weights without stalling the pipeline.
+
+If a sentence in this document cannot be turned into one of those measurements, it does not belong in revision 3.
+
+---
+
+## 12. Intellectual honesty clause
+
+Time multiplexing is a real way to stretch scarce photonic hardware. Free-space cameras, mirrored slabs, color-mix “gates,” and sonic beam rails are not how you ship that idea.
+
+This specification is free to use. It is also free to disprove. The successful version will look like a dull PIC with a spreadsheet of loss and noise, not a memorandum about terahertz glass.
+
